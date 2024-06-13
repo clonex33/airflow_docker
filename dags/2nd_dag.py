@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from airflow.operators.python_operator import PythonOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow import DAG
 from airflow.exceptions import AirflowException
 import os
@@ -33,7 +34,7 @@ with DAG(
     def process_csv_file(run_id, dag_id, schema_name):
         try:
             # Construct the input file path using CUR_DIR
-            input_filepath = os.path.join(CUR_DIR, 'data_set', 'Website_Logs.csv')
+            input_filepath = os.path.join(CUR_DIR, 'data_setss', 'Website_Logs.csv')
 
             if not os.path.exists(input_filepath):
                 raise AirflowException(f"Input file does not exist: {input_filepath}")
@@ -51,8 +52,7 @@ with DAG(
             listings['accessed_date'] = pd.to_datetime(listings['accessed_date'], errors='coerce')
 
             # Convert specified columns to integer type
-            listings['duration_(secs)'] = pd.to_numeric(listings['duration_(secs)'], errors='coerce').fillna(0).astype(
-                int)
+            listings['duration_(secs)'] = pd.to_numeric(listings['duration_(secs)'], errors='coerce').fillna(0).astype(int)
             listings['age'] = pd.to_numeric(listings['age'], errors='coerce').fillna(0).astype(int)
             listings['sales'] = pd.to_numeric(listings['sales'], errors='coerce').fillna(0).astype(int)
             listings['returned_amount'] = pd.to_numeric(listings['returned_amount'], errors='coerce').fillna(0).astype(
@@ -86,5 +86,36 @@ with DAG(
         op_kwargs={'run_id': '{{ run_id }}', 'dag_id': dag.dag_id, 'schema_name': 'myeg'},
     )
 
-    # Add the task to the DAG
-    process_csv_task
+    create_run_table = PostgresOperator(
+        task_id='create_run_table',
+        postgres_conn_id='postgres_localhost',
+        sql="""
+            create table if not exists myeg.dag_runs (
+                dt date,
+                dag_id character varying,
+                run_id character varying,
+                run_status string
+            )
+        """
+    )
+
+    update_run_table_success = PostgresOperator(
+        task_id='update_run_table_success',
+        postgres_conn_id='postgres_localhost',
+        sql="""
+            insert into myeg.dag_runs (dt, dag_id, run_id, run_status) values ('{{ ds }}', '{{ dag.dag_id }}', '{{ run_id }}', 'success')
+        """
+    )
+
+    update_run_table_failed = PostgresOperator(
+        task_id='update_run_table_failed',
+        postgres_conn_id='postgres_localhost',
+        sql="""
+            insert into myeg.dag_runs (dt, dag_id, run_id, run_status) values ('{{ ds }}', '{{ dag.dag_id }}', '{{ run_id }}', 'failed')
+        """,
+        trigger_rule='all_failed'
+    )
+
+    # Add the tasks to the DAG
+    process_csv_task >> create_run_table >> update_run_table_success
+    process_csv_task >> update_run_table_failed
